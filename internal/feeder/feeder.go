@@ -1,6 +1,7 @@
-// Package feeder makes each RepeaterTastic radio a Meshflow feeder, reporting as that radio's
-// relay persona. It uploads what the relay persona itself would hear, keeps Meshflow's node list
-// up to date from those packets, and runs the traceroutes Meshflow asks for.
+// Package feeder makes each RepeaterTastic radio a Meshflow feeder, reporting as one identity on
+// that radio: the one chosen in "Report as", or else its relay persona. It uploads what that
+// identity would hear itself, keeps Meshflow's node list up to date from those packets, and runs
+// the traceroutes Meshflow asks for from it.
 package feeder
 
 import (
@@ -37,6 +38,7 @@ type Settings struct {
 	APIKey            string `json:"api_key"`
 	WSURL             string `json:"ws_url"`
 	Radios            List   `json:"radios"`
+	ReportAs          List   `json:"report_as"` // node IDs; the first on each radio is its feeder
 	UploadPackets     *bool  `json:"upload_packets"`
 	UploadNodes       *bool  `json:"upload_nodes"`
 	AcceptTraceroutes *bool  `json:"accept_traceroutes"`
@@ -108,16 +110,17 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 		if (len(s.Radios) > 0 && !slices.Contains(s.Radios, r.Id)) || r.Relay == nil {
 			continue
 		}
-		api, err := meshflow.NewClient(s.APIURL, s.APIKey, r.Relay.NodeNum, "repeatertastic-meshflow/"+f.version)
+		self := feederIdentity(r, s.ReportAs)
+		api, err := meshflow.NewClient(s.APIURL, s.APIKey, self.NodeNum, "repeatertastic-meshflow/"+f.version)
 		if err != nil {
 			f.problem = err.Error()
 			cancel()
 			return
 		}
-		rep := &reporter{f: f, ctx: rctx, radio: r, api: api, ignore: ignore, settings: s,
+		rep := &reporter{f: f, ctx: rctx, radio: r, self: self, api: api, ignore: ignore, settings: s,
 			queue: make(chan job, queueSize), nodes: map[uint32]*nodeState{}}
 		if on(s.AcceptTraceroutes) {
-			rep.ws = &meshflow.Commands{URL: wsBase, Key: s.APIKey, Feeder: r.Relay.NodeNum, OnTrace: rep.traceroute, OnState: rep.wsState}
+			rep.ws = &meshflow.Commands{URL: wsBase, Key: s.APIKey, Feeder: self.NodeNum, OnTrace: rep.traceroute, OnState: rep.wsState}
 		}
 		f.reporters = append(f.reporters, rep)
 		f.wg.Add(1)
@@ -129,6 +132,19 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 	if len(f.reporters) == 0 {
 		f.problem = "No radio to report for: check the Radios setting"
 	}
+}
+
+// feederIdentity is the identity a radio reports as: the first of reportAs on that radio, else
+// its relay persona.
+func feederIdentity(r *pluginv1.Radio, reportAs []string) *pluginv1.Identity {
+	for _, want := range reportAs {
+		for _, id := range r.Identities {
+			if strings.EqualFold(id.NodeId, want) {
+				return id
+			}
+		}
+	}
+	return r.Relay
 }
 
 // Stop ends the reporters and everything they started, and waits for them.
@@ -180,7 +196,11 @@ func (f *Feeder) Status() (summary, state string, fields map[string]string) {
 		if name == "" {
 			name = r.radio.Id
 		}
-		fields[fmt.Sprintf("%s (%s)", name, r.radio.Relay.NodeId)] = st.line()
+		label := fmt.Sprintf("%s as %s (%s)", name, r.self.LongName, r.self.NodeId)
+		if r.self.NodeNum == r.radio.Relay.NodeNum {
+			label = fmt.Sprintf("%s as its relay persona (%s)", name, r.self.NodeId)
+		}
+		fields[label] = st.line()
 		if st.problem != "" {
 			state = "warning"
 			problems = append(problems, st.problem)
@@ -218,7 +238,7 @@ type job struct {
 	done func(ok bool) // node jobs: record the result
 }
 
-// nodeState is a node as this relay persona has heard it, and what Meshflow has of it.
+// nodeState is a node as the feeder identity has heard it, and what Meshflow has of it.
 type nodeState struct {
 	meshflow.Node
 	lastHeard     time.Time
@@ -232,6 +252,7 @@ type reporter struct {
 	f        *Feeder
 	ctx      context.Context
 	radio    *pluginv1.Radio
+	self     *pluginv1.Identity // the identity this radio reports as
 	api      *meshflow.Client
 	ws       *meshflow.Commands
 	ignore   map[string]bool
@@ -272,19 +293,19 @@ func (r *reporter) run() {
 	}
 }
 
-// uploadSelf sends the relay persona's own node. Other nodes come only from packets the relay
-// persona hears: the radio's node database is shared by every identity and can hold names and
-// positions learned on channels the relay persona can't read.
+// uploadSelf sends the feeder identity's own node. Other nodes come only from packets it hears:
+// the radio's node database is shared by every identity and can hold names and positions learned
+// on channels the feeder can't read.
 func (r *reporter) uploadSelf() {
 	resp, err := r.f.host.ListNodes(r.ctx, &pluginv1.ListNodesRequest{RadioId: r.radio.Id})
 	if err != nil {
 		if status.Code(err) != codes.Canceled && r.ctx.Err() == nil {
-			r.logOnce("nodes", "warn", "can't read %s's own node: %v", r.radio.Relay.NodeId, err)
+			r.logOnce("nodes", "warn", "can't read %s's own node: %v", r.self.NodeId, err)
 		}
 		return
 	}
 	for _, n := range resp.Nodes {
-		if n.NodeNum != r.radio.Relay.NodeNum {
+		if n.NodeNum != r.self.NodeNum {
 			continue
 		}
 		u := &pb.User{}
@@ -295,12 +316,22 @@ func (r *reporter) uploadSelf() {
 	}
 }
 
-// packet uploads what the relay persona would hear itself: broadcasts on its channels and
+// packet uploads what the feeder identity would hear itself: broadcasts on its channels and
 // packets addressed to it. RepeaterTastic decodes with every identity's channels and keys, so
 // anything else (DMs between other nodes, other identities' traffic) is left out.
 func (r *reporter) packet(ev *pluginv1.PacketEvent) {
-	if ev.Direction != "rx" || !ev.Decoded || ev.RelayChannelIndex < 0 {
+	if ev.Direction != "rx" || !ev.Decoded {
 		return
+	}
+	index := -1
+	for _, h := range ev.Holders {
+		if h.NodeNum == r.self.NodeNum {
+			index = int(h.ChannelIndex)
+			break
+		}
+	}
+	if index < 0 {
+		return // not on a channel the feeder holds, nor a DM to it
 	}
 	// First sightings only: echoes of our own packets, duplicates and legacy packets are what a
 	// Meshtastic node never hands its client either.
@@ -313,11 +344,12 @@ func (r *reporter) packet(ev *pluginv1.PacketEvent) {
 	if proto.Unmarshal(ev.MeshPacket, p) != nil {
 		return
 	}
-	relay := r.radio.Relay.NodeNum
+	self := r.self.NodeNum
 	d := p.GetDecoded()
-	if d == nil || p.From == relay || (p.To != broadcast && p.To != relay) {
+	if d == nil || p.From == self || (p.To != broadcast && p.To != self) {
 		return
 	}
+	p.Channel = uint32(index) // the channel's index on the feeder, as its client would see it
 	if r.ignore[d.Portnum.String()] {
 		return
 	}
@@ -429,7 +461,7 @@ func (r *reporter) enqueue(j job) {
 		if j.done != nil {
 			j.done(false)
 		}
-		r.logOnce("queue", "warn", "upload queue for %s is full; dropping until Meshflow catches up", r.radio.Relay.NodeId)
+		r.logOnce("queue", "warn", "upload queue for %s is full; dropping until Meshflow catches up", r.self.NodeId)
 	}
 }
 
@@ -461,14 +493,14 @@ func (r *reporter) send(j job) {
 				r.nodesSent.Add(1)
 			}
 			if prev, _ := r.unreachable.Swap("").(string); prev != "" {
-				r.f.log("info", "Meshflow is reachable again for %s", r.radio.Relay.NodeId)
+				r.f.log("info", "Meshflow is reachable again for %s", r.self.NodeId)
 			}
 			r.authFailed.Store(false)
 			finish(true)
 			return
 		case meshflow.Retryable(err):
 			r.unreachable.Store(err.Error())
-			r.logOnce("unreachable", "warn", "Meshflow unreachable for %s, retrying: %v", r.radio.Relay.NodeId, err)
+			r.logOnce("unreachable", "warn", "Meshflow unreachable for %s, retrying: %v", r.self.NodeId, err)
 			select {
 			case <-r.ctx.Done():
 				finish(false)
@@ -489,21 +521,21 @@ func (r *reporter) fail(what string, err error) {
 	var he *meshflow.HTTPError
 	if errors.As(err, &he) && (he.Status == 401 || he.Status == 403) {
 		r.authFailed.Store(true)
-		r.authErr.Store(fmt.Sprintf("Meshflow refused the key for %s (%d): link it to this node in Meshflow", r.radio.Relay.NodeId, he.Status))
-		r.logOnce("auth", "error", "Meshflow refused a %s from %s: %v", what, r.radio.Relay.NodeId, err)
+		r.authErr.Store(fmt.Sprintf("Meshflow refused the key for %s (%d): link it to this node in Meshflow", r.self.NodeId, he.Status))
+		r.logOnce("auth", "error", "Meshflow refused a %s from %s: %v", what, r.self.NodeId, err)
 		return
 	}
-	r.logOnce("refused-"+what, "warn", "Meshflow refused a %s from %s: %v", what, r.radio.Relay.NodeId, err)
+	r.logOnce("refused-"+what, "warn", "Meshflow refused a %s from %s: %v", what, r.self.NodeId, err)
 }
 
 func (r *reporter) traceroute(target uint32) {
 	if r.ctx.Err() != nil {
 		return
 	}
-	r.logOnce("trace-cmd", "info", "Meshflow asked %s for a traceroute to !%08x", r.radio.Relay.NodeId, target)
+	r.logOnce("trace-cmd", "info", "Meshflow asked %s for a traceroute to !%08x", r.self.NodeId, target)
 	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
 	defer cancel()
-	_, err := r.f.host.Traceroute(ctx, &pluginv1.TracerouteRequest{RadioId: r.radio.Id, Target: fmt.Sprintf("!%08x", target)})
+	_, err := r.f.host.Traceroute(ctx, &pluginv1.TracerouteRequest{RadioId: r.radio.Id, Target: fmt.Sprintf("!%08x", target), From: r.self.NodeId})
 	if err != nil {
 		r.traceSkipped.Add(1)
 		r.logOnce("trace", "info", "traceroute to !%08x not sent: %s", target, status.Convert(err).Message())
@@ -515,7 +547,7 @@ func (r *reporter) traceroute(target uint32) {
 func (r *reporter) wsState(up bool, err error) {
 	r.wsUp.Store(up)
 	if up {
-		r.f.log("info", "command socket connected for %s", r.radio.Relay.NodeId)
+		r.f.log("info", "command socket connected for %s", r.self.NodeId)
 	} else if err != nil && r.ctx.Err() == nil {
 		r.logOnce("ws", "warn", "%v", err)
 	}

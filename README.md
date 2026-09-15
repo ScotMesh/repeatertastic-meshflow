@@ -8,7 +8,9 @@
 
 A [RepeaterTastic](https://github.com/A13xB0/RepeaterTastic) plugin that feeds
 [Meshflow](https://github.com/pskillen/meshflow-api). Each of the site's radios becomes a Meshflow
-feeder and reports as its **relay persona**, the node that radio already is on the mesh. It does
+feeder and reports as its **relay persona**, the node that radio already is on the mesh, or as
+another identity you choose (for example a dedicated one that receives the DMs used to claim
+nodes). It does
 what [meshflow-bot](https://github.com/pskillen/meshflow-bot) does for a Meshtastic node, without
 a separate radio or bot.
 
@@ -26,8 +28,9 @@ a separate radio or bot.
 
 ## Install
 
-1. In Meshflow, add each radio's relay persona as a **managed node** and create a **node API key**
-   linked to it (one key can cover several radios).
+1. In Meshflow, add the node each radio reports as (its relay persona, or the identity you'll pick
+   in **Report as**) as a **managed node**, and create a **node API key** linked to it. One key can
+   cover several radios.
    - To claim the node, send the claim key as a DM from the relay persona to a Meshflow feeder:
      **Chat → Speaking as** the relay persona in RepeaterTastic.
 2. Download `repeatertastic-meshflow-<version>.zip` from the
@@ -62,6 +65,7 @@ plugins:
 | Meshflow API URL | `STORAGE_API_ROOT` | The API server; a trailing `/api` is fine |
 | Node API key | `STORAGE_API_TOKEN` | Linked in Meshflow to every relay persona you feed |
 | Command WebSocket URL | `MESHFLOW_WS_URL` | Empty = derived from the API URL |
+| Report as | | Tick an identity per radio to feed as; radios without one report as their relay persona. That identity must be the managed node in Meshflow |
 | Radios | | Tick the radios to feed; none ticked = every radio |
 | Upload packets / nodes | | Both on by default |
 | Run Meshflow's traceroutes | | On by default. RepeaterTastic allows 12 an hour per plugin (2 at once, then one every 5 minutes); raise `plugins.traceroutes_per_hour` if Meshflow asks for more |

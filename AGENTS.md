@@ -29,10 +29,11 @@ scripts/bundle.sh             the installable zip
   enum names, base64 bytes, `fromId`/`toId`, `decoded.<name>`) after meshflow-bot's sanitising.
   Node bodies use v3 `meshtastic_*` fields. Check changes against
   `meshflow-api/Meshflow/packets/serializers.py` and add a test.
-- **Report only what the relay persona would hear.** Upload a packet only when
-  `relay_channel_index >= 0` and it's addressed to broadcast or to the relay persona. Build nodes
-  only from those packets (and the relay's own node), never from `ListNodes`/`NodeEvent`: the
-  host's node database is shared by every identity.
+- **Report only what the feeder identity would hear.** That's the radio's "Report as" identity,
+  or else its relay persona. Upload a packet only when that identity is in `holders` and the
+  packet is addressed to broadcast or to it. Build nodes only from those packets (and its own
+  node), never from `ListNodes`/`NodeEvent`: the host's node database is shared by every
+  identity.
 - **Don't flood.** Traceroutes go through RepeaterTastic's budget. Don't add retries that transmit.
 - **Never log the API key.** It travels in the WebSocket query; use `redact`.
 - Commits end with the attribution lines the session asks for. `go.mod` pins RepeaterTastic to a

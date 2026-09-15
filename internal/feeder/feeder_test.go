@@ -89,8 +89,12 @@ func event(t *testing.T, kind string, relayIndex int32, from, to uint32, port pb
 	t.Helper()
 	b, _ := proto.Marshal(&pb.MeshPacket{From: from, To: to, Id: 55, RxTime: proto.Uint32(1700000000), Channel: uint32(max(relayIndex, 0)),
 		PayloadVariant: &pb.MeshPacket_Decoded{Decoded: &pb.Data{Portnum: port, Payload: payload}}})
-	return &pluginv1.PacketEvent{RadioId: "main", Direction: "rx", Kind: kind, MeshPacket: b, Decoded: true, ChannelHash: 8,
+	ev := &pluginv1.PacketEvent{RadioId: "main", Direction: "rx", Kind: kind, MeshPacket: b, Decoded: true, ChannelHash: 8,
 		RelayChannelIndex: relayIndex, ReporterNodeNum: relayNum}
+	if relayIndex >= 0 {
+		ev.Holders = append(ev.Holders, &pluginv1.ChannelHolder{NodeNum: relayNum, ChannelIndex: uint32(relayIndex)})
+	}
+	return ev
 }
 
 func start(t *testing.T, mf *fakeMeshflow, s Settings) *Feeder {
@@ -101,7 +105,8 @@ func start(t *testing.T, mf *fakeMeshflow, s Settings) *Feeder {
 	no := false
 	s.APIURL, s.APIKey, s.AcceptTraceroutes = srv.URL, "k", &no
 	f.Configure(context.Background(), s, []*pluginv1.Radio{
-		{Id: "main", Name: "LongFast", Relay: &pluginv1.Identity{NodeId: "!11cbe35a", NodeNum: relayNum}},
+		{Id: "main", Name: "LongFast", Relay: &pluginv1.Identity{NodeId: "!11cbe35a", NodeNum: relayNum},
+			Identities: []*pluginv1.Identity{{NodeId: "!11cbe35a", NodeNum: relayNum}, {NodeId: "!0000abcd", NodeNum: 0xabcd, LongName: "Claims"}}},
 		{Id: "mf", Name: "MediumFast", Relay: &pluginv1.Identity{NodeId: "!22222222", NodeNum: 0x22222222}},
 	})
 	t.Cleanup(f.Stop)
@@ -193,6 +198,37 @@ func TestRefusedNodeIsRetried(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	f.Packet(event(t, "heard", 0, 7, broadcast, pb.PortNum_NODEINFO_APP, info))
 	waitFor(t, "the retried node", func() bool { return len(mf.find("Flaky")) == 1 })
+}
+
+// Report as another identity: its channels and its DMs, under its node number.
+func TestFeederReportsAsTheChosenIdentity(t *testing.T) {
+	mf := &fakeMeshflow{}
+	f := start(t, mf, Settings{Radios: List{"main"}, ReportAs: List{"!0000abcd"}, UploadNodes: new(bool)})
+	claim := event(t, "delivered", -1, 7, 0xabcd, pb.PortNum_TEXT_MESSAGE_APP, []byte("claim key 1234"))
+	claim.Holders = []*pluginv1.ChannelHolder{{NodeNum: 0xabcd, ChannelIndex: 0}}
+	f.Packet(claim)
+	f.Packet(event(t, "delivered", 0, 7, relayNum, pb.PortNum_TEXT_MESSAGE_APP, []byte("to the relay, not the feeder")))
+	onTheirChannel := event(t, "heard", -1, 7, broadcast, pb.PortNum_TEXT_MESSAGE_APP, []byte("on channel 2"))
+	onTheirChannel.Holders = []*pluginv1.ChannelHolder{{NodeNum: 0xabcd, ChannelIndex: 2}}
+	f.Packet(onTheirChannel)
+	waitFor(t, "uploads", func() bool { return len(mf.find("/ingest/")) >= 2 })
+	time.Sleep(200 * time.Millisecond)
+	ingests := mf.find("/ingest/")
+	if len(ingests) != 2 || strings.Contains(strings.Join(ingests, ""), "not the feeder") {
+		t.Fatalf("ingests = %v", ingests)
+	}
+	for _, in := range ingests {
+		if !strings.HasPrefix(in, "POST /api/v3/packets/43981/ingest/") {
+			t.Errorf("not reported as the chosen identity: %s", in)
+		}
+	}
+	if !strings.Contains(ingests[1], `"channel":2`) {
+		t.Errorf("channel isn't the feeder's index: %s", ingests[1])
+	}
+	_, _, fields := f.Status()
+	if _, ok := fields["LongFast as Claims (!0000abcd)"]; !ok {
+		t.Errorf("status fields = %v", fields)
+	}
 }
 
 func TestListReadsOldAndNewSettings(t *testing.T) {

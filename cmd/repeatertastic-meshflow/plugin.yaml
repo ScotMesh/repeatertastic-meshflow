@@ -3,7 +3,7 @@ id: meshflow
 name: Meshflow
 version: 0.0.0 # set by scripts/bundle.sh
 api: 1
-description: Feeds Meshflow as each radio's relay persona. It uploads the packets and nodes the relay persona hears and runs the traceroutes Meshflow asks for.
+description: Feeds Meshflow as an identity on each radio (its relay persona unless you choose another). It uploads the packets and nodes that identity hears and runs the traceroutes Meshflow asks for.
 author: ScotMesh
 homepage: https://github.com/ScotMesh/repeatertastic-meshflow
 license: GPL-3.0-or-later
@@ -25,27 +25,32 @@ settings:
     label: Node API key
     type: secret
     required: true
-    help: A Meshflow node API key linked to each radio's relay persona (a managed node in Meshflow).
+    help: A Meshflow node API key linked to each identity you report as (a managed node in Meshflow).
   - key: ws_url
     label: Command WebSocket URL
     type: url
     placeholder: derived from the API URL
     help: Only if Meshflow's WebSocket is on a different address (MESHFLOW_WS_URL).
+  - key: report_as
+    label: Report as
+    type: identities
+    placeholder: Each radio's relay persona
+    help: The identity each radio feeds Meshflow as; it must be that node in Meshflow and receives the DMs used to claim nodes. Tick one per radio. A radio without one reports as its relay persona.
   - key: radios
     label: Radios
     type: radios
     placeholder: All radios
-    help: The radios to feed; none ticked feeds every radio. Each radio reports as its own relay persona.
+    help: The radios to feed; none ticked feeds every radio.
   - key: upload_packets
     label: Upload packets
     type: bool
     default: true
-    help: Text messages, positions, node info, telemetry and traceroutes on the relay persona's channels, and DMs to it.
+    help: Text messages, positions, node info, telemetry and traceroutes on the reporting identity's channels, and DMs to it.
   - key: upload_nodes
     label: Upload nodes
     type: bool
     default: true
-    help: Keep Meshflow's list of nodes each relay persona knows up to date.
+    help: Keep Meshflow's list of the nodes each reporting identity hears up to date.
   - key: accept_traceroutes
     label: Run Meshflow's traceroutes
     type: bool
