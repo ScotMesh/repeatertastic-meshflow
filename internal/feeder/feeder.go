@@ -276,7 +276,11 @@ func (r *reporter) run() {
 	}
 	wg.Go(func() {
 		if err := r.api.ReportVersion(r.ctx); err != nil && r.ctx.Err() == nil {
-			r.fail("version", err)
+			if meshflow.Retryable(err) {
+				r.logOnce("unreachable", "warn", "Meshflow unreachable for %s: %v", r.self.NodeId, err)
+			} else {
+				r.fail("version", err)
+			}
 		}
 		if on(r.settings.UploadNodes) {
 			r.uploadSelf()

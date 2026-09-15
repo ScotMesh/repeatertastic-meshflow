@@ -43,7 +43,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          platforms: linux/amd64,linux/arm64,linux/arm/v7 # distroless has no arm/v6; Pi Zero uses the zip bundle
           push: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
