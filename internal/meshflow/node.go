@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/A13xB0/RepeaterTastic/pb"
+	"github.com/ScotMesh/RepeaterTastic/pb"
 )
 
 // Node is what a feeder knows about one node: learned from packets it heard itself.

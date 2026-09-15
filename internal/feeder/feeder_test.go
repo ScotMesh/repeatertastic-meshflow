@@ -15,8 +15,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/A13xB0/RepeaterTastic/pb"
-	pluginv1 "github.com/A13xB0/RepeaterTastic/pluginapi/v1"
+	"github.com/ScotMesh/RepeaterTastic/pb"
+	pluginv1 "github.com/ScotMesh/RepeaterTastic/pluginapi/v1"
 )
 
 const relayNum = 0x11cbe35a

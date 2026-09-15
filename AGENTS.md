@@ -4,7 +4,7 @@ Guidance for coding agents (and humans) working on repeatertastic-meshflow.
 
 ## What this is
 
-A RepeaterTastic plugin (Plugin API v1, `github.com/A13xB0/RepeaterTastic/pluginsdk`) that makes
+A RepeaterTastic plugin (Plugin API v1, `github.com/ScotMesh/RepeaterTastic/pluginsdk`) that makes
 each radio's relay persona a Meshflow feeder. It stands in for meshflow-bot, so the wire format
 must match what meshflow-bot sends: meshflow-api is the judge.
 
@@ -36,5 +36,5 @@ scripts/bundle.sh             the installable zip
   identity.
 - **Don't flood.** Traceroutes go through RepeaterTastic's budget. Don't add retries that transmit.
 - **Never log the API key.** It travels in the WebSocket query; use `redact`.
-- Commits end with the attribution lines the session asks for. `go.mod` pins RepeaterTastic to a
-  commit on its `main` branch; pin a release tag once RepeaterTastic has one with plugins.
+- Commits end with the attribution lines the session asks for. `go.mod` pins a RepeaterTastic release
+  tag (`github.com/ScotMesh/RepeaterTastic`); move it forward when the Plugin API gains what you need.

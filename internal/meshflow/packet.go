@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/A13xB0/RepeaterTastic/pb"
+	"github.com/ScotMesh/RepeaterTastic/pb"
 )
 
 // Ports meshflow-api ingests; anything else it answers 400.

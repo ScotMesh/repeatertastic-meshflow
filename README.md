@@ -6,7 +6,7 @@
 
 # Meshflow for RepeaterTastic
 
-A [RepeaterTastic](https://github.com/A13xB0/RepeaterTastic) plugin that feeds
+A [RepeaterTastic](https://github.com/ScotMesh/RepeaterTastic) plugin that feeds
 [Meshflow](https://github.com/pskillen/meshflow-api). Each of the site's radios becomes a Meshflow
 feeder and reports as its **relay persona**, the node that radio already is on the mesh, or as
 another identity you choose (for example a dedicated one that receives the DMs used to claim
@@ -27,6 +27,9 @@ a separate radio or bot.
   anything Meshflow refused.
 
 ## Install
+
+Needs RepeaterTastic v0.2.0 or later.
+
 
 1. In Meshflow, add the node each radio reports as (its relay persona, or the identity you'll pick
    in **Report as**) as a **managed node**, and create a **node API key** linked to it. One key can

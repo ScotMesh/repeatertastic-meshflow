@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	pluginv1 "github.com/A13xB0/RepeaterTastic/pluginapi/v1"
-	"github.com/A13xB0/RepeaterTastic/pluginsdk"
+	pluginv1 "github.com/ScotMesh/RepeaterTastic/pluginapi/v1"
+	"github.com/ScotMesh/RepeaterTastic/pluginsdk"
 
 	"github.com/ScotMesh/repeatertastic-meshflow/internal/feeder"
 )
