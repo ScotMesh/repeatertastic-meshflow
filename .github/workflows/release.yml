@@ -3,13 +3,13 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 
 jobs:
   bundle:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -26,7 +26,11 @@ jobs:
         run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes
 
   image:
+    needs: bundle # only publish an image for a release whose tests passed
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -39,7 +43,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
           push: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |

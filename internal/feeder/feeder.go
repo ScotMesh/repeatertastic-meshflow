@@ -1,6 +1,6 @@
 // Package feeder makes each RepeaterTastic radio a Meshflow feeder, reporting as that radio's
-// relay persona: it uploads what the relay persona would hear, keeps Meshflow's node list up to
-// date and runs the traceroutes Meshflow asks for.
+// relay persona. It uploads what the relay persona itself would hear, keeps Meshflow's node list
+// up to date from those packets, and runs the traceroutes Meshflow asks for.
 package feeder
 
 import (
@@ -73,7 +73,6 @@ type Feeder struct {
 
 	mu        sync.Mutex
 	reporters []*reporter
-	settings  Settings
 	problem   string
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -89,7 +88,7 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 	f.Stop()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.settings, f.problem, f.reporters = s, "", nil
+	f.problem, f.reporters = "", nil
 	if strings.TrimSpace(s.APIURL) == "" || strings.TrimSpace(s.APIKey) == "" {
 		f.problem = "Set the Meshflow API URL and node API key"
 		return
@@ -99,18 +98,14 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 		f.problem = err.Error()
 		return
 	}
-	want := s.Radios
 	ignore := map[string]bool{}
 	for _, p := range s.IgnorePortnums {
-		ignore[strings.ToUpper(p)] = true
+		ignore[strings.ToUpper(strings.TrimSpace(p))] = true
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	f.cancel = cancel
 	for _, r := range radios {
-		if len(want) > 0 && !slices.Contains(want, r.Id) {
-			continue
-		}
-		if r.Relay == nil {
+		if (len(s.Radios) > 0 && !slices.Contains(s.Radios, r.Id)) || r.Relay == nil {
 			continue
 		}
 		api, err := meshflow.NewClient(s.APIURL, s.APIKey, r.Relay.NodeNum, "repeatertastic-meshflow/"+f.version)
@@ -119,8 +114,8 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 			cancel()
 			return
 		}
-		rep := &reporter{f: f, radio: r, api: api, ignore: ignore, settings: s,
-			queue: make(chan job, queueSize), sent: map[uint32]sentNode{}}
+		rep := &reporter{f: f, ctx: rctx, radio: r, api: api, ignore: ignore, settings: s,
+			queue: make(chan job, queueSize), nodes: map[uint32]*nodeState{}}
 		if on(s.AcceptTraceroutes) {
 			rep.ws = &meshflow.Commands{URL: wsBase, Key: s.APIKey, Feeder: r.Relay.NodeNum, OnTrace: rep.traceroute, OnState: rep.wsState}
 		}
@@ -128,7 +123,7 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 		f.wg.Add(1)
 		go func() {
 			defer f.wg.Done()
-			rep.run(rctx)
+			rep.run()
 		}()
 	}
 	if len(f.reporters) == 0 {
@@ -136,7 +131,7 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 	}
 }
 
-// Stop ends the reporters and waits for them.
+// Stop ends the reporters and everything they started, and waits for them.
 func (f *Feeder) Stop() {
 	f.mu.Lock()
 	cancel := f.cancel
@@ -152,13 +147,6 @@ func (f *Feeder) Stop() {
 func (f *Feeder) Packet(ev *pluginv1.PacketEvent) {
 	if rep := f.reporter(ev.RadioId); rep != nil {
 		rep.packet(ev)
-	}
-}
-
-// Node hands a node event to its radio's reporter.
-func (f *Feeder) Node(n *pluginv1.Node) {
-	if rep := f.reporter(n.RadioId); rep != nil {
-		rep.node(nil, n)
 	}
 }
 
@@ -188,11 +176,11 @@ func (f *Feeder) Status() (summary, state string, fields map[string]string) {
 		st := r.stats()
 		packets += st.packets
 		nodes += st.nodes
-		label := fmt.Sprintf("%s (%s)", r.radio.Name, r.radio.Relay.NodeId)
-		if r.radio.Name == "" {
-			label = fmt.Sprintf("%s (%s)", r.radio.Id, r.radio.Relay.NodeId)
+		name := r.radio.Name
+		if name == "" {
+			name = r.radio.Id
 		}
-		fields[label] = st.line()
+		fields[fmt.Sprintf("%s (%s)", name, r.radio.Relay.NodeId)] = st.line()
 		if st.problem != "" {
 			state = "warning"
 			problems = append(problems, st.problem)
@@ -208,9 +196,12 @@ func (f *Feeder) Status() (summary, state string, fields map[string]string) {
 // -------------------------------------------------------------------------------------- reporter
 
 const (
-	queueSize   = 2000
-	maxAttempts = 6
-	nodeRefresh = 6 * time.Hour
+	queueSize       = 2000
+	maxNodes        = 5000
+	nodeRefresh     = 6 * time.Hour    // resend an unchanged node this often
+	metricsRefresh  = 30 * time.Minute // resend a node for new metrics at most this often
+	maxRetryBackoff = 2 * time.Minute
+	broadcast       = 0xffffffff
 )
 
 type jobKind int
@@ -224,15 +215,22 @@ type job struct {
 	kind jobKind
 	body []byte
 	what string
+	done func(ok bool) // node jobs: record the result
 }
 
-type sentNode struct {
-	key string
-	at  time.Time
+// nodeState is a node as this relay persona has heard it, and what Meshflow has of it.
+type nodeState struct {
+	meshflow.Node
+	lastHeard     time.Time
+	sentKey       string
+	sentAt        time.Time
+	sentMetricsAt time.Time
+	pending       bool
 }
 
 type reporter struct {
 	f        *Feeder
+	ctx      context.Context
 	radio    *pluginv1.Radio
 	api      *meshflow.Client
 	ws       *meshflow.Commands
@@ -240,54 +238,68 @@ type reporter struct {
 	settings Settings
 	queue    chan job
 
-	sentMu sync.Mutex
-	sent   map[uint32]sentNode
+	nodesMu sync.Mutex
+	nodes   map[uint32]*nodeState
 
-	packets, nodes, rejected, dropped, retried, traces, traceSkipped atomic.Int64
-	wsUp                                                             atomic.Bool
-	lastErr                                                          atomic.Value // string
-	authFailed                                                       atomic.Bool
-	lastLog                                                          sync.Map // kind → time.Time
+	packets, nodesSent, refused, dropped, traces, traceSkipped atomic.Int64
+	wsUp                                                       atomic.Bool
+	authFailed                                                 atomic.Bool
+	authErr, unreachable                                       atomic.Value // string
+	lastLog                                                    sync.Map     // fixed kind → time.Time
 }
 
-func (r *reporter) run(ctx context.Context) {
+func (r *reporter) run() {
+	var wg sync.WaitGroup
 	if r.ws != nil {
-		go r.ws.Run(ctx)
+		wg.Go(func() { r.ws.Run(r.ctx) })
 	}
-	go func() {
-		if err := r.api.ReportVersion(ctx); err != nil {
+	wg.Go(func() {
+		if err := r.api.ReportVersion(r.ctx); err != nil && r.ctx.Err() == nil {
 			r.fail("version", err)
 		}
 		if on(r.settings.UploadNodes) {
-			r.uploadAllNodes(ctx)
+			r.uploadSelf()
 		}
-	}()
+	})
+	defer wg.Wait()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-r.ctx.Done():
 			return
 		case j := <-r.queue:
-			r.send(ctx, j)
+			r.send(j)
 		}
 	}
 }
 
-// uploadAllNodes sends the node database once at start, as meshflow-bot does on connect.
-func (r *reporter) uploadAllNodes(ctx context.Context) {
-	resp, err := r.f.host.ListNodes(ctx, &pluginv1.ListNodesRequest{RadioId: r.radio.Id})
+// uploadSelf sends the relay persona's own node. Other nodes come only from packets the relay
+// persona hears: the radio's node database is shared by every identity and can hold names and
+// positions learned on channels the relay persona can't read.
+func (r *reporter) uploadSelf() {
+	resp, err := r.f.host.ListNodes(r.ctx, &pluginv1.ListNodesRequest{RadioId: r.radio.Id})
 	if err != nil {
-		if status.Code(err) != codes.Canceled {
-			r.logOnce("nodes", "warn", "can't list nodes on %s: %v", r.radio.Id, err)
+		if status.Code(err) != codes.Canceled && r.ctx.Err() == nil {
+			r.logOnce("nodes", "warn", "can't read %s's own node: %v", r.radio.Relay.NodeId, err)
 		}
 		return
 	}
 	for _, n := range resp.Nodes {
-		r.node(ctx, n)
+		if n.NodeNum != r.radio.Relay.NodeNum {
+			continue
+		}
+		u := &pb.User{}
+		if len(n.User) == 0 || proto.Unmarshal(n.User, u) != nil {
+			return
+		}
+		r.learn(n.NodeNum, time.Now(), func(st *nodeState) { st.User = u })
 	}
 }
 
+// packet uploads what the relay persona would hear itself: broadcasts on its channels and
+// packets addressed to it. RepeaterTastic decodes with every identity's channels and keys, so
+// anything else (DMs between other nodes, other identities' traffic) is left out.
 func (r *reporter) packet(ev *pluginv1.PacketEvent) {
-	if !on(r.settings.UploadPackets) || ev.Direction != "rx" || !ev.Decoded || ev.RelayChannelIndex < 0 {
+	if ev.Direction != "rx" || !ev.Decoded || ev.RelayChannelIndex < 0 {
 		return
 	}
 	// First sightings only: echoes of our own packets, duplicates and legacy packets are what a
@@ -301,45 +313,112 @@ func (r *reporter) packet(ev *pluginv1.PacketEvent) {
 	if proto.Unmarshal(ev.MeshPacket, p) != nil {
 		return
 	}
+	relay := r.radio.Relay.NodeNum
 	d := p.GetDecoded()
-	if d == nil || r.ignore[d.Portnum.String()] || p.From == r.radio.Relay.NodeNum {
+	if d == nil || p.From == relay || (p.To != broadcast && p.To != relay) {
 		return
 	}
-	if ev.ChannelHash == 0 && p.To == r.radio.Relay.NodeNum {
-		p.PkiEncrypted = true
+	if r.ignore[d.Portnum.String()] {
+		return
+	}
+	heard := time.Now()
+	if p.RxTime != nil {
+		heard = time.Unix(int64(p.GetRxTime()), 0)
+	}
+	if on(r.settings.UploadNodes) {
+		r.learnFromPacket(p, d, heard)
+	}
+	if !on(r.settings.UploadPackets) {
+		return
 	}
 	body, err := meshflow.PacketJSON(p)
 	if err != nil {
 		return // not a port or shape meshflow-api takes
 	}
-	r.enqueue(job{kind: jobPacket, body: body, what: d.Portnum.String()})
+	r.enqueue(job{kind: jobPacket, body: body, what: "packet"})
 }
 
-// node queues a node upsert. With a context (the start-up batch) it waits for room in the queue.
-func (r *reporter) node(ctx context.Context, n *pluginv1.Node) {
-	if !on(r.settings.UploadNodes) {
-		return
-	}
-	body, key := meshflow.NodeJSON(n, time.Now())
-	if body == nil {
-		return
-	}
-	r.sentMu.Lock()
-	last, ok := r.sent[n.NodeNum]
-	if ok && last.key == key && time.Since(last.at) < nodeRefresh {
-		r.sentMu.Unlock()
-		return
-	}
-	r.sent[n.NodeNum] = sentNode{key: key, at: time.Now()}
-	r.sentMu.Unlock()
-	if ctx != nil {
-		select {
-		case r.queue <- job{kind: jobNode, body: body, what: n.NodeId}:
-		case <-ctx.Done():
+func (r *reporter) learnFromPacket(p *pb.MeshPacket, d *pb.Data, heard time.Time) {
+	switch d.Portnum {
+	case pb.PortNum_NODEINFO_APP:
+		u := &pb.User{}
+		if proto.Unmarshal(d.Payload, u) == nil {
+			r.learn(p.From, heard, func(st *nodeState) { st.User = u })
 		}
+	case pb.PortNum_POSITION_APP:
+		pos := &pb.Position{}
+		if proto.Unmarshal(d.Payload, pos) == nil && pos.LatitudeI != nil && pos.LongitudeI != nil {
+			at := heard
+			if pos.Time != 0 {
+				at = time.Unix(int64(pos.Time), 0)
+			}
+			r.learn(p.From, heard, func(st *nodeState) { st.Position, st.PosAt = pos, at })
+		}
+	case pb.PortNum_TELEMETRY_APP:
+		t := &pb.Telemetry{}
+		if proto.Unmarshal(d.Payload, t) == nil && t.GetDeviceMetrics() != nil {
+			at := heard
+			if t.Time != 0 {
+				at = time.Unix(int64(t.Time), 0)
+			}
+			r.learn(p.From, heard, func(st *nodeState) { st.Metrics, st.MetricsAt = t.GetDeviceMetrics(), at })
+		}
+	}
+}
+
+// learn updates a node and queues an upsert when Meshflow's copy is out of date.
+func (r *reporter) learn(num uint32, heard time.Time, update func(*nodeState)) {
+	r.nodesMu.Lock()
+	st := r.nodes[num]
+	if st == nil {
+		if len(r.nodes) >= maxNodes {
+			r.evictOldestLocked()
+		}
+		st = &nodeState{Node: meshflow.Node{Num: num}}
+		r.nodes[num] = st
+	}
+	update(st)
+	if heard.After(st.lastHeard) {
+		st.lastHeard = heard
+	}
+	if st.pending {
+		r.nodesMu.Unlock()
 		return
 	}
-	r.enqueue(job{kind: jobNode, body: body, what: n.NodeId})
+	body, key := meshflow.NodeJSON(&st.Node)
+	now := time.Now()
+	due := body != nil && (key != st.sentKey || now.Sub(st.sentAt) > nodeRefresh ||
+		(st.MetricsAt.After(st.sentMetricsAt) && now.Sub(st.sentAt) > metricsRefresh))
+	if !due {
+		r.nodesMu.Unlock()
+		return
+	}
+	st.pending = true
+	metricsAt := st.MetricsAt
+	r.nodesMu.Unlock()
+
+	r.enqueue(job{kind: jobNode, body: body, what: "node", done: func(ok bool) {
+		r.nodesMu.Lock()
+		defer r.nodesMu.Unlock()
+		st.pending = false
+		if ok {
+			st.sentKey, st.sentAt, st.sentMetricsAt = key, time.Now(), metricsAt
+		}
+	}})
+}
+
+func (r *reporter) evictOldestLocked() {
+	var oldest uint32
+	var at time.Time
+	found := false
+	for num, st := range r.nodes {
+		if !st.pending && (!found || st.lastHeard.Before(at)) {
+			oldest, at, found = num, st.lastHeard, true
+		}
+	}
+	if found {
+		delete(r.nodes, oldest)
+	}
 }
 
 func (r *reporter) enqueue(j job) {
@@ -347,45 +426,62 @@ func (r *reporter) enqueue(j job) {
 	case r.queue <- j:
 	default:
 		r.dropped.Add(1)
-		r.logOnce("queue", "warn", "upload queue for %s is full; dropping (is Meshflow reachable?)", r.radio.Id)
+		if j.done != nil {
+			j.done(false)
+		}
+		r.logOnce("queue", "warn", "upload queue for %s is full; dropping until Meshflow catches up", r.radio.Relay.NodeId)
 	}
 }
 
-func (r *reporter) send(ctx context.Context, j job) {
+// send uploads one job. Network and server errors hold it at the head of the queue and retry
+// with backoff until Meshflow is back; a refusal (4xx) drops it.
+func (r *reporter) send(j job) {
+	finish := func(ok bool) {
+		if j.done != nil {
+			j.done(ok)
+		}
+	}
 	wait := 2 * time.Second
-	for attempt := 1; ; attempt++ {
+	for {
 		var err error
 		if j.kind == jobPacket {
-			err = r.api.Ingest(ctx, j.body)
+			err = r.api.Ingest(r.ctx, j.body)
 		} else {
-			err = r.api.UpsertNode(ctx, j.body)
+			err = r.api.UpsertNode(r.ctx, j.body)
 		}
-		if err == nil {
+		if r.ctx.Err() != nil {
+			finish(false)
+			return
+		}
+		switch {
+		case err == nil:
 			if j.kind == jobPacket {
 				r.packets.Add(1)
 			} else {
-				r.nodes.Add(1)
+				r.nodesSent.Add(1)
 			}
-			if r.authFailed.Swap(false) {
-				r.lastErr.Store("")
+			if prev, _ := r.unreachable.Swap("").(string); prev != "" {
+				r.f.log("info", "Meshflow is reachable again for %s", r.radio.Relay.NodeId)
 			}
+			r.authFailed.Store(false)
+			finish(true)
 			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if !meshflow.Retryable(err) || attempt >= maxAttempts {
-			r.rejected.Add(1)
+		case meshflow.Retryable(err):
+			r.unreachable.Store(err.Error())
+			r.logOnce("unreachable", "warn", "Meshflow unreachable for %s, retrying: %v", r.radio.Relay.NodeId, err)
+			select {
+			case <-r.ctx.Done():
+				finish(false)
+				return
+			case <-time.After(wait):
+			}
+			wait = min(maxRetryBackoff, wait*2)
+		default:
+			r.refused.Add(1)
 			r.fail(j.what, err)
+			finish(false)
 			return
 		}
-		r.retried.Add(1)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		wait = min(time.Minute, wait*2)
 	}
 }
 
@@ -393,17 +489,19 @@ func (r *reporter) fail(what string, err error) {
 	var he *meshflow.HTTPError
 	if errors.As(err, &he) && (he.Status == 401 || he.Status == 403) {
 		r.authFailed.Store(true)
-		r.lastErr.Store(fmt.Sprintf("Meshflow refused the key for %s (%d): link it to this node in Meshflow", r.radio.Relay.NodeId, he.Status))
-		r.logOnce("auth", "error", "Meshflow refused %s for %s: %v", what, r.radio.Relay.NodeId, err)
+		r.authErr.Store(fmt.Sprintf("Meshflow refused the key for %s (%d): link it to this node in Meshflow", r.radio.Relay.NodeId, he.Status))
+		r.logOnce("auth", "error", "Meshflow refused a %s from %s: %v", what, r.radio.Relay.NodeId, err)
 		return
 	}
-	r.lastErr.Store(err.Error())
-	r.logOnce("upload-"+what, "warn", "Meshflow didn't take %s from %s: %v", what, r.radio.Relay.NodeId, err)
+	r.logOnce("refused-"+what, "warn", "Meshflow refused a %s from %s: %v", what, r.radio.Relay.NodeId, err)
 }
 
 func (r *reporter) traceroute(target uint32) {
+	if r.ctx.Err() != nil {
+		return
+	}
 	r.logOnce("trace-cmd", "info", "Meshflow asked %s for a traceroute to !%08x", r.radio.Relay.NodeId, target)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
 	defer cancel()
 	_, err := r.f.host.Traceroute(ctx, &pluginv1.TracerouteRequest{RadioId: r.radio.Id, Target: fmt.Sprintf("!%08x", target)})
 	if err != nil {
@@ -418,12 +516,12 @@ func (r *reporter) wsState(up bool, err error) {
 	r.wsUp.Store(up)
 	if up {
 		r.f.log("info", "command socket connected for %s", r.radio.Relay.NodeId)
-	} else if err != nil {
+	} else if err != nil && r.ctx.Err() == nil {
 		r.logOnce("ws", "warn", "%v", err)
 	}
 }
 
-// logOnce rate-limits a kind of log line to one a minute.
+// logOnce rate-limits a kind of log line to one a minute. Kinds are a fixed set.
 func (r *reporter) logOnce(kind, level, format string, args ...any) {
 	now := time.Now()
 	if v, ok := r.lastLog.Load(kind); ok && now.Sub(v.(time.Time)) < time.Minute {
@@ -434,14 +532,13 @@ func (r *reporter) logOnce(kind, level, format string, args ...any) {
 }
 
 type reporterStats struct {
-	packets, nodes, rejected, dropped, traces, skipped int64
-	queued                                             int
-	ws                                                 string
-	problem                                            string
+	packets, nodes, refused, dropped, traces, skipped int64
+	queued                                            int
+	ws, problem                                       string
 }
 
 func (r *reporter) stats() reporterStats {
-	st := reporterStats{packets: r.packets.Load(), nodes: r.nodes.Load(), rejected: r.rejected.Load(), dropped: r.dropped.Load(),
+	st := reporterStats{packets: r.packets.Load(), nodes: r.nodesSent.Load(), refused: r.refused.Load(), dropped: r.dropped.Load(),
 		traces: r.traces.Load(), skipped: r.traceSkipped.Load(), queued: len(r.queue)}
 	switch {
 	case r.ws == nil:
@@ -451,8 +548,11 @@ func (r *reporter) stats() reporterStats {
 	default:
 		st.ws = "commands reconnecting"
 	}
+	if msg, _ := r.unreachable.Load().(string); msg != "" {
+		st.problem = "Meshflow unreachable: " + msg
+	}
 	if r.authFailed.Load() {
-		st.problem, _ = r.lastErr.Load().(string)
+		st.problem, _ = r.authErr.Load().(string)
 	}
 	return st
 }
@@ -462,8 +562,8 @@ func (s reporterStats) line() string {
 	if s.traces+s.skipped > 0 {
 		parts = append(parts, fmt.Sprintf("%d traceroutes (%d not sent)", s.traces, s.skipped))
 	}
-	if s.rejected > 0 {
-		parts = append(parts, count(s.rejected)+" refused")
+	if s.refused > 0 {
+		parts = append(parts, count(s.refused)+" refused")
 	}
 	if s.dropped > 0 {
 		parts = append(parts, count(s.dropped)+" dropped")

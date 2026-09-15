@@ -12,9 +12,13 @@ feeder and reports as its **relay persona**, the node that radio already is on t
 what [meshflow-bot](https://github.com/pskillen/meshflow-bot) does for a Meshtastic node, without
 a separate radio or bot.
 
-- **Packets:** text messages, positions, node info, telemetry and traceroutes that the relay persona
-  hears on its channels, plus DMs to it. Other identities' private messages are never sent.
-- **Nodes:** each radio's node list is uploaded at start, and nodes are updated as they change.
+- **Packets:** what the relay persona itself would hear. That's text messages, positions, node
+  info, telemetry and traceroutes broadcast on its channels, plus DMs addressed to it. DMs between
+  other nodes and other identities' traffic are never sent, even though RepeaterTastic can decode
+  them.
+- **Nodes:** built only from those packets, plus the relay persona's own node, and updated as they
+  change. Nothing learned by other identities (private channels, their DMs) reaches Meshflow.
+- **Reliable:** while Meshflow is unreachable, uploads wait and retry, and the status says so.
 - **Traceroutes:** Meshflow's traceroute requests arrive over the command WebSocket and are sent
   from the relay persona. They stay within RepeaterTastic's plugin budget and duty cycle.
 - **Status** on the plugin's card in RepeaterTastic, per radio: packets, nodes, traceroutes, and
@@ -60,7 +64,7 @@ plugins:
 | Command WebSocket URL | `MESHFLOW_WS_URL` | Empty = derived from the API URL |
 | Radios | | Tick the radios to feed; none ticked = every radio |
 | Upload packets / nodes | | Both on by default |
-| Run Meshflow's traceroutes | | On by default. Raise `plugins.traceroutes_per_hour` in RepeaterTastic if Meshflow asks for more than 12 an hour |
+| Run Meshflow's traceroutes | | On by default. RepeaterTastic allows 12 an hour per plugin (2 at once, then one every 5 minutes); raise `plugins.traceroutes_per_hour` if Meshflow asks for more |
 | Don't upload | `IGNORE_PORTNUMS` | Tick packet types to keep out of Meshflow |
 
 Uses Meshflow's feeder API v3: `POST /api/v3/packets/{node}/ingest/` and `/nodes/`,
@@ -76,8 +80,12 @@ To run it next to RepeaterTastic instead of inside it:
 3. Start the container:
 
 ```bash
-docker run -d --name meshflow -e RT_PLUGIN_ADDR=<repeatertastic-host>:4450 -e RT_PLUGIN_TOKEN=rtp_… ghcr.io/scotmesh/repeatertastic-meshflow
+docker run -d --name meshflow --restart unless-stopped \
+  -e RT_PLUGIN_ADDR=<repeatertastic-host>:4450 -e RT_PLUGIN_TOKEN=rtp_… ghcr.io/scotmesh/repeatertastic-meshflow
 ```
+
+Attached, it keeps retrying. RepeaterTastic refuses the session until the plugin's settings are
+filled in on its page, and the plugin connects once they are.
 
 ## Build
 

@@ -16,7 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/A13xB0/RepeaterTastic/pb"
-	pluginv1 "github.com/A13xB0/RepeaterTastic/pluginapi/v1"
 )
 
 func mustMarshal(t *testing.T, m proto.Message) []byte {
@@ -109,6 +108,10 @@ func TestPacketJSONShapes(t *testing.T) {
 		t.Errorf("traceroute = %v", tr)
 	}
 
+	soil := mustMarshal(t, &pb.Telemetry{Variant: &pb.Telemetry_SoilWaterMetrics{SoilWaterMetrics: &pb.SoilWaterMetrics{}}})
+	if _, err := PacketJSON(base(pb.PortNum_TELEMETRY_APP, soil)); !errors.Is(err, ErrSkip) {
+		t.Errorf("telemetry meshflow-api doesn't take: %v", err)
+	}
 	if _, err := PacketJSON(base(pb.PortNum_ROUTING_APP, nil)); !errors.Is(err, ErrSkip) {
 		t.Errorf("routing packet: %v", err)
 	}
@@ -118,10 +121,10 @@ func TestPacketJSONShapes(t *testing.T) {
 }
 
 func TestNodeJSON(t *testing.T) {
-	n := &pluginv1.Node{NodeNum: 0x433d4494, User: mustMarshal(t, &pb.User{LongName: "Pole", ShortName: "POLE", HwModel: pb.HardwareModel_HELTEC_V3}),
-		Position:      mustMarshal(t, &pb.Position{LatitudeI: i32(559533000), LongitudeI: i32(-31883000), Altitude: i32(52)}),
-		DeviceMetrics: mustMarshal(t, &pb.DeviceMetrics{BatteryLevel: u32(80)})}
-	b, key := NodeJSON(n, time.Unix(1700000000, 0))
+	n := &Node{Num: 0x433d4494, User: &pb.User{LongName: "Pole", ShortName: "POLE", HwModel: pb.HardwareModel_HELTEC_V3},
+		Position: &pb.Position{LatitudeI: i32(559533000), LongitudeI: i32(-31883000), Altitude: i32(52)}, PosAt: time.Unix(1700000000, 0),
+		Metrics: &pb.DeviceMetrics{BatteryLevel: u32(80)}, MetricsAt: time.Unix(1700000100, 0)}
+	b, key := NodeJSON(n)
 	m := decode(t, b)
 	if m["id"] != float64(0x433d4494) || m["meshtastic_hw_model"] != "HELTEC_V3" || m["user"].(map[string]any)["short_name"] != "POLE" {
 		t.Errorf("node = %v", m)
@@ -130,17 +133,24 @@ func TestNodeJSON(t *testing.T) {
 	if pos["reported_time"] != "2023-11-14T22:13:20Z" || pos["meshtastic_location_source"] != "UNSET" {
 		t.Errorf("position = %v", pos)
 	}
-	for _, f := range []string{"battery_level", "voltage", "meshtastic_channel_utilization", "meshtastic_air_util_tx", "uptime_seconds", "reported_time"} {
-		if _, ok := m["device_metrics"].(map[string]any)[f]; !ok {
+	dm := m["device_metrics"].(map[string]any)
+	for _, f := range []string{"battery_level", "voltage", "meshtastic_channel_utilization", "meshtastic_air_util_tx", "uptime_seconds"} {
+		if _, ok := dm[f]; !ok {
 			t.Errorf("device_metrics has no %s", f)
 		}
 	}
-	_, key2 := NodeJSON(n, time.Unix(1800000000, 0))
-	if key != key2 {
-		t.Error("the change key depends on the time")
+	if dm["reported_time"] != "2023-11-14T22:15:00Z" {
+		t.Errorf("metrics reported_time = %v, want the time they were reported", dm["reported_time"])
 	}
-	if b, _ := NodeJSON(&pluginv1.Node{NodeNum: 1}, time.Now()); b != nil {
+	n.Metrics, n.MetricsAt = &pb.DeviceMetrics{BatteryLevel: u32(20)}, time.Unix(1800000000, 0)
+	if _, key2 := NodeJSON(n); key != key2 {
+		t.Error("the change key depends on metrics")
+	}
+	if b, _ := NodeJSON(&Node{Num: 1}); b != nil {
 		t.Error("a node without user info was rendered")
+	}
+	if b, _ := NodeJSON(&Node{Num: 1, User: &pb.User{ShortName: "X"}}); b != nil {
+		t.Error("a node without a long name was rendered (meshflow-api refuses a blank one)")
 	}
 }
 

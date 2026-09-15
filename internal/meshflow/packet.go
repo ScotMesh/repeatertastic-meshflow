@@ -89,8 +89,8 @@ func PacketJSON(p *pb.MeshPacket) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if t.Variant == nil {
-			return nil, fmt.Errorf("%w: telemetry without metrics", ErrSkip)
+		if !telemetryVariants(t) {
+			return nil, fmt.Errorf("%w: telemetry meshflow-api doesn't take", ErrSkip)
 		}
 		if t.Time == 0 && p.RxTime != nil {
 			m["time"] = p.GetRxTime() // meshflow-api needs a reading time
@@ -104,6 +104,16 @@ func PacketJSON(p *pb.MeshPacket) ([]byte, error) {
 		dec["traceroute"] = m
 	}
 	return json.Marshal(out)
+}
+
+// telemetryVariants: the telemetry objects meshflow-api ingests; others are answered 400.
+func telemetryVariants(t *pb.Telemetry) bool {
+	switch t.Variant.(type) {
+	case *pb.Telemetry_DeviceMetrics, *pb.Telemetry_LocalStats, *pb.Telemetry_EnvironmentMetrics, *pb.Telemetry_AirQualityMetrics,
+		*pb.Telemetry_PowerMetrics, *pb.Telemetry_HealthMetrics, *pb.Telemetry_HostMetrics, *pb.Telemetry_TrafficManagementStats:
+		return true
+	}
+	return false
 }
 
 func messageDict(m proto.Message) (map[string]any, error) {
