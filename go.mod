@@ -3,7 +3,7 @@ module github.com/ScotMesh/repeatertastic-meshflow
 go 1.25.0
 
 require (
-	github.com/A13xB0/RepeaterTastic v0.1.0-bench.0.20260915175508-8723c369d887
+	github.com/A13xB0/RepeaterTastic v0.1.0-bench.0.20260915182315-6b2b3537f4fd
 	github.com/gorilla/websocket v1.5.3
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12

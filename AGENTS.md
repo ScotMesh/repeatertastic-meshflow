@@ -37,4 +37,4 @@ scripts/bundle.sh             the installable zip
 - **Don't flood.** Traceroutes go through RepeaterTastic's budget. Don't add retries that transmit.
 - **Never log the API key.** It travels in the WebSocket query; use `redact`.
 - Commits end with the attribution lines the session asks for. `go.mod` pins RepeaterTastic to a
-  commit on its `plugins` branch until that is merged and tagged: then pin the tag.
+  commit on its `main` branch; pin a release tag once RepeaterTastic has one with plugins.
