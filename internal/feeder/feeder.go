@@ -5,6 +5,7 @@ package feeder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -35,11 +36,28 @@ type Settings struct {
 	APIURL            string `json:"api_url"`
 	APIKey            string `json:"api_key"`
 	WSURL             string `json:"ws_url"`
-	Radios            string `json:"radios"`
+	Radios            List   `json:"radios"`
 	UploadPackets     *bool  `json:"upload_packets"`
 	UploadNodes       *bool  `json:"upload_nodes"`
 	AcceptTraceroutes *bool  `json:"accept_traceroutes"`
-	IgnorePortnums    string `json:"ignore_portnums"`
+	IgnorePortnums    List   `json:"ignore_portnums"`
+}
+
+// List is a list setting. It also reads the comma-separated text older versions saved.
+type List []string
+
+func (l *List) UnmarshalJSON(b []byte) error {
+	var items []string
+	if err := json.Unmarshal(b, &items); err == nil {
+		*l = items
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	*l = splitList(s)
+	return nil
 }
 
 func on(b *bool) bool { return b == nil || *b }
@@ -81,9 +99,9 @@ func (f *Feeder) Configure(ctx context.Context, s Settings, radios []*pluginv1.R
 		f.problem = err.Error()
 		return
 	}
-	want := splitList(s.Radios)
+	want := s.Radios
 	ignore := map[string]bool{}
-	for _, p := range splitList(s.IgnorePortnums) {
+	for _, p := range s.IgnorePortnums {
 		ignore[strings.ToUpper(p)] = true
 	}
 	rctx, cancel := context.WithCancel(ctx)

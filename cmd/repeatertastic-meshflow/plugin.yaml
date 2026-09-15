@@ -33,9 +33,9 @@ settings:
     help: Only if Meshflow's WebSocket is on a different address (MESHFLOW_WS_URL).
   - key: radios
     label: Radios
-    type: string
-    placeholder: all radios
-    help: Radio IDs to feed, separated by commas. Each radio reports as its own relay persona.
+    type: radios
+    placeholder: All radios
+    help: The radios to feed; none ticked feeds every radio. Each radio reports as its own relay persona.
   - key: upload_packets
     label: Upload packets
     type: bool
@@ -53,9 +53,10 @@ settings:
     help: Traceroutes still go through RepeaterTastic's plugin budget (plugins.traceroutes_per_hour) and duty cycle.
   - key: ignore_portnums
     label: Don't upload
-    type: string
-    placeholder: TEXT_MESSAGE_APP
-    help: Port names to keep out of Meshflow, separated by commas.
+    type: multiselect
+    options: [TEXT_MESSAGE_APP, POSITION_APP, NODEINFO_APP, TELEMETRY_APP, TRACEROUTE_APP]
+    placeholder: Upload everything
+    help: Packet types to keep out of Meshflow.
 run:
   managed:
     exec: bin/repeatertastic-meshflow-{os}-{arch}

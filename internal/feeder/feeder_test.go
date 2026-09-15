@@ -85,7 +85,7 @@ func TestFeederUploadsAsTheRelayPersona(t *testing.T) {
 		{Id: "mf", Name: "MediumFast", Relay: &pluginv1.Identity{NodeId: "!22222222", NodeNum: 0x22222222}},
 	}
 	no := false
-	f.Configure(context.Background(), Settings{APIURL: srv.URL, APIKey: "k", Radios: "main", AcceptTraceroutes: &no, IgnorePortnums: "position_app"}, radios)
+	f.Configure(context.Background(), Settings{APIURL: srv.URL, APIKey: "k", Radios: List{"main"}, AcceptTraceroutes: &no, IgnorePortnums: List{"POSITION_APP"}}, radios)
 	defer f.Stop()
 
 	f.Packet(packetEvent(t, "delivered", 1, pb.PortNum_TEXT_MESSAGE_APP, []byte("hi")))   // uploaded
@@ -127,6 +127,16 @@ func TestFeederUploadsAsTheRelayPersona(t *testing.T) {
 	summary, state, fields := f.Status()
 	if state != "ok" || !strings.Contains(summary, "Feeding 1 radio") || len(fields) != 1 {
 		t.Errorf("status %q %q %v", summary, state, fields)
+	}
+}
+
+func TestListReadsOldAndNewSettings(t *testing.T) {
+	var s Settings
+	if err := json.Unmarshal([]byte(`{"radios":["main","mf"],"ignore_portnums":"TEXT_MESSAGE_APP, position_app"}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Radios) != 2 || len(s.IgnorePortnums) != 2 {
+		t.Fatalf("settings = %+v", s)
 	}
 }
 

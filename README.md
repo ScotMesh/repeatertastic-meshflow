@@ -58,10 +58,10 @@ plugins:
 | Meshflow API URL | `STORAGE_API_ROOT` | The API server; a trailing `/api` is fine |
 | Node API key | `STORAGE_API_TOKEN` | Linked in Meshflow to every relay persona you feed |
 | Command WebSocket URL | `MESHFLOW_WS_URL` | Empty = derived from the API URL |
-| Radios | | Radio IDs to feed, separated by commas; empty = every radio |
+| Radios | | Tick the radios to feed; none ticked = every radio |
 | Upload packets / nodes | | Both on by default |
 | Run Meshflow's traceroutes | | On by default. Raise `plugins.traceroutes_per_hour` in RepeaterTastic if Meshflow asks for more than 12 an hour |
-| Don't upload | `IGNORE_PORTNUMS` | Port names, e.g. `TEXT_MESSAGE_APP` |
+| Don't upload | `IGNORE_PORTNUMS` | Tick packet types to keep out of Meshflow |
 
 Uses Meshflow's feeder API v3: `POST /api/v3/packets/{node}/ingest/` and `/nodes/`,
 `PUT …/bot-version/`, and `ws/nodes/?feeder_node_id=…`. The node is the relay persona's node
