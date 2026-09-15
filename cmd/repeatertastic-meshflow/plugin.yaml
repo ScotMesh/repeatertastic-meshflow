@@ -1,0 +1,61 @@
+# RepeaterTastic plugin manifest. scripts/bundle.sh copies it to the root of the bundle.
+id: meshflow
+name: Meshflow
+version: 0.0.0 # set by scripts/bundle.sh
+api: 1
+description: Feeds Meshflow as each radio's relay persona. It uploads the packets and nodes the relay persona hears and runs the traceroutes Meshflow asks for.
+author: ScotMesh
+homepage: https://github.com/ScotMesh/repeatertastic-meshflow
+license: GPL-3.0-or-later
+logo: logo.png
+permissions:
+  - packets.read
+  - nodes.read
+  - traceroute.send
+network:
+  - your Meshflow API server
+settings:
+  - key: api_url
+    label: Meshflow API URL
+    type: url
+    required: true
+    placeholder: https://api.meshflow.example.org
+    help: The Meshflow API server (the STORAGE_API_ROOT meshflow-bot would use).
+  - key: api_key
+    label: Node API key
+    type: secret
+    required: true
+    help: A Meshflow node API key linked to each radio's relay persona (a managed node in Meshflow).
+  - key: ws_url
+    label: Command WebSocket URL
+    type: url
+    placeholder: derived from the API URL
+    help: Only if Meshflow's WebSocket is on a different address (MESHFLOW_WS_URL).
+  - key: radios
+    label: Radios
+    type: string
+    placeholder: all radios
+    help: Radio IDs to feed, separated by commas. Each radio reports as its own relay persona.
+  - key: upload_packets
+    label: Upload packets
+    type: bool
+    default: true
+    help: Text messages, positions, node info, telemetry and traceroutes on the relay persona's channels, and DMs to it.
+  - key: upload_nodes
+    label: Upload nodes
+    type: bool
+    default: true
+    help: Keep Meshflow's list of nodes each relay persona knows up to date.
+  - key: accept_traceroutes
+    label: Run Meshflow's traceroutes
+    type: bool
+    default: true
+    help: Traceroutes still go through RepeaterTastic's plugin budget (plugins.traceroutes_per_hour) and duty cycle.
+  - key: ignore_portnums
+    label: Don't upload
+    type: string
+    placeholder: TEXT_MESSAGE_APP
+    help: Port names to keep out of Meshflow, separated by commas.
+run:
+  managed:
+    exec: bin/repeatertastic-meshflow-{os}-{arch}
