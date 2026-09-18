@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Secrets can't be read in an if:, so it is put here and the step checks env.
+      STORE_TOKEN: ${{ secrets.STORE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,6 +27,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes
+
+      # Ask the store to read this release and open its own pull request. It takes the checksum,
+      # size, architectures and permissions out of the bundle, so nothing is typed by hand.
+      # STORE_TOKEN needs actions:write on ScotMesh/repeatertastic-plugins; without it the release
+      # still happens and the store is updated by hand.
+      - name: Offer it to the store
+        if: env.STORE_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.STORE_TOKEN }}
+        run: |
+          gh workflow run add-release.yml -R ScotMesh/repeatertastic-plugins \
+            -f repo="${GITHUB_REPOSITORY}" -f tag="${GITHUB_REF_NAME}"
 
   image:
     needs: bundle # only publish an image for a release whose tests passed
